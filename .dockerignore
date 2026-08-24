@@ -1,0 +1,8 @@
+**/node_modules
+**/data
+.data
+.env
+.git
+loadtest
+scripts
+**/test

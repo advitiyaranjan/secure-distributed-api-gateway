@@ -1,0 +1,23 @@
+# Overrides for load testing:
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up --build -d
+#   npm run loadtest
+#
+# - Raises per-user/IP rate limits 1000x so throughput, not the limiter, is measured
+#   (the `auth` tier for login/token endpoints keeps its normal limit on purpose).
+# - Adds 5 ms to every product-service DB query to model a networked database,
+#   which makes the gateway cache's effect visible.
+services:
+  gateway:
+    environment:
+      RATE_LIMIT_MULTIPLIER: 1000
+      LOG_LEVEL: warn
+  product-service:
+    environment:
+      SIMULATED_DB_LATENCY_MS: 5
+      LOG_LEVEL: warn
+  order-service:
+    environment:
+      LOG_LEVEL: warn
+  auth-service:
+    environment:
+      LOG_LEVEL: warn

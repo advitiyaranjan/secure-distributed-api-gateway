@@ -1,0 +1,13 @@
+{
+  "name": "@sdag/log-collector",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

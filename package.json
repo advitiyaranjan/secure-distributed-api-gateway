@@ -1,0 +1,21 @@
+{
+  "name": "secure-distributed-api-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Containerized API gateway with OAuth 2.0 / JWT auth, RBAC, Redis rate limiting & caching, health checks and centralized logging.",
+  "type": "module",
+  "workspaces": [
+    "services/*",
+    "loadtest"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "gen-env": "node scripts/gen-env.js",
+    "dev": "node --disable-warning=ExperimentalWarning scripts/dev-local.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"shared/**/*.test.js\" \"services/**/test/*.test.js\"",
+    "e2e": "node scripts/e2e.js",
+    "loadtest": "node loadtest/run.js"
+  }
+}

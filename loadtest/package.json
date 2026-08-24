@@ -1,0 +1,9 @@
+{
+  "name": "@sdag/loadtest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "autocannon": "^8.0.0"
+  }
+}

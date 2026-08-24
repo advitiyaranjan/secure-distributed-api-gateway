@@ -1,0 +1,168 @@
+# Secure Distributed API Gateway
+#   npm run gen-env          # creates .env with random secrets (once)
+#   docker compose up --build -d
+#   https://localhost:8443   # self-signed cert unless you mount your own
+#
+# Only the gateway is published. All backends and Redis live on an `internal`
+# network with no route to the host or the internet.
+
+name: sdag
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true                 # immutable root filesystem; state only in /data volumes
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:                        # bounded local logs; the log-collector holds the searchable copy
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-common-env: &common-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  INTERNAL_SECRET: ${INTERNAL_SECRET:?run `npm run gen-env` to create .env}
+  LOG_COLLECTOR_URL: http://log-collector:4004
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    <<: *hardening
+    user: redis                   # run unprivileged from the start (entrypoint skips its chown/su step)
+    # noeviction: Redis holds token deny-list entries; evicting one would un-revoke a token.
+    # When full, cache writes fail (treated as misses) rather than security state disappearing.
+    command: >
+      redis-server --requirepass "${REDIS_PASSWORD:?run `npm run gen-env`}"
+      --maxmemory 256mb --maxmemory-policy noeviction --save "" --appendonly no
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 300M }
+
+  log-collector:
+    build: { context: ., dockerfile: services/log-collector/Dockerfile }
+    <<: *hardening
+    environment:
+      <<: *common-env
+      LOG_COLLECTOR_URL: ""
+      PORT: 4004
+      DB_PATH: /data/logs.db
+      LOG_RETENTION_HOURS: ${LOG_RETENTION_HOURS:-72}
+    volumes: [logs-data:/data]
+    networks: [backend]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+  auth-service:
+    build: { context: ., dockerfile: services/auth-service/Dockerfile }
+    <<: *hardening
+    environment:
+      <<: *common-env
+      PORT: 4001
+      DB_PATH: /data/auth.db
+      KEY_DIR: /data/keys
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      JWT_ISSUER: https://auth.sdag.local
+      JWT_AUDIENCE: sdag-api
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-900}
+      PUBLIC_BASE_URL: https://${PUBLIC_HOSTNAME:-localhost}:8443/auth
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?run `npm run gen-env`}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
+      REPORTING_CLIENT_SECRET: ${REPORTING_CLIENT_SECRET:-}
+      ENABLE_PASSWORD_GRANT: ${ENABLE_PASSWORD_GRANT:-true}
+    volumes: [auth-data:/data]
+    networks: [backend]
+    depends_on:
+      redis: { condition: service_healthy }
+      log-collector: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256M }
+
+  product-service:
+    build: { context: ., dockerfile: services/product-service/Dockerfile }
+    <<: *hardening
+    environment:
+      <<: *common-env
+      PORT: 4002
+      DB_PATH: /data/products.db
+      SIMULATED_DB_LATENCY_MS: ${SIMULATED_DB_LATENCY_MS:-0}
+    volumes: [products-data:/data]
+    networks: [backend]
+    depends_on:
+      log-collector: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256M }
+
+  order-service:
+    build: { context: ., dockerfile: services/order-service/Dockerfile }
+    <<: *hardening
+    environment:
+      <<: *common-env
+      PORT: 4003
+      DB_PATH: /data/orders.db
+      PRODUCT_SERVICE_URL: http://product-service:4002
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY:?run `npm run gen-env`}
+    volumes: [orders-data:/data]
+    networks: [backend]
+    depends_on:
+      product-service: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256M }
+
+  gateway:
+    build: { context: ., dockerfile: services/gateway/Dockerfile }
+    <<: *hardening
+    environment:
+      <<: *common-env
+      HTTPS_PORT: 8443
+      HTTP_PORT: 8080
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
+      CERT_DIR: /data/certs
+      # To use a real certificate, mount it and set:
+      # TLS_CERT_PATH: /certs/fullchain.pem
+      # TLS_KEY_PATH: /certs/privkey.pem
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      AUTH_SERVICE_URL: http://auth-service:4001
+      PRODUCT_SERVICE_URL: http://product-service:4002
+      ORDER_SERVICE_URL: http://order-service:4003
+      JWT_ISSUER: https://auth.sdag.local
+      JWT_AUDIENCE: sdag-api
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      RATE_LIMIT_MULTIPLIER: ${RATE_LIMIT_MULTIPLIER:-1}
+      RATE_LIMIT_FAIL_OPEN: ${RATE_LIMIT_FAIL_OPEN:-true}
+    ports:
+      - "8443:8443"
+      - "8080:8080"
+    volumes: [gateway-data:/data]
+    networks: [edge, backend]
+    depends_on:
+      redis: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+      product-service: { condition: service_healthy }
+      order-service: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 256M }
+
+networks:
+  edge: {}
+  backend:
+    internal: true
+
+volumes:
+  auth-data:
+  products-data:
+  orders-data:
+  logs-data:
+  gateway-data:
