@@ -49,7 +49,7 @@ See [services/gateway/src/app.js](services/gateway/src/app.js). Authentication r
 
 ## Run it
 
-**Docker (intended):**
+**Docker** (verified on Docker Engine 29.8 / Compose v5.6: all six containers report healthy, and the e2e suite passes 35/35 against the stack):
 
 ```bash
 npm run gen-env                     # writes .env with random secrets
@@ -111,18 +111,20 @@ npm run loadtest                      # DURATION=10 CONNECTIONS=10,50,100 by def
 
 This runs autocannon over: a `/health` baseline; product reads with and without the cache, counting DB queries; a concurrency sweep at 10/50/100 connections; order creation (the write path, including a service-to-service call and encryption); and a brute-force attack on the token endpoint. It writes a Markdown report to `loadtest/results/`.
 
-**Measured result** (one laptop, `npm run dev` stack: all five services in one Node process with the in-memory Redis mock, load generator on the same machine, 5 ms simulated DB latency, 8 s per run). The full report is in `loadtest/results/`.
+**Measured result: Docker Compose stack.** Six containers with real Redis 7.4 and a 1-CPU / 256 MB limit per service, on Docker Engine 29.8 in WSL2 (Ubuntu 24.04). The load generator ran on the Windows host, going through WSL2 port forwarding. 5 ms simulated DB latency, 10 s per run, **0 errors across all runs**. The full report is in `loadtest/results/`.
 
 | Scenario | Conns | Req/s | p50 ms | p99 ms | Notes |
 |---|---|---|---|---|---|
-| GET /health (baseline) | 50 | 24,256 | 1 | 3 | TLS + gateway only |
-| GET /api/products, cache bypassed | 50 | 1,673 | 28 | 54 | 13,435 DB queries |
-| GET /api/products, cached | 50 | 6,224 | 7 | 10 | **0 DB queries**, 100% hit ratio |
-| GET /api/products, cached | 100 | 6,438 | 15 | 22 | throughput flat, latency scales with queueing |
-| POST /api/orders | 50 | 326 | 147 | 265 | JWT + validation + 2 product lookups + AES-GCM + write |
-| Token endpoint brute force | 20 | 4,529 | 4 | 7 | 22,627 / 22,646 rejected with **429** at the gateway |
+| GET /health (baseline) | 50 | 5,172 | 6 | 63 | TLS + gateway only |
+| GET /api/products, cache bypassed | 50 | 660 | 73 | 206 | 6,646 DB queries |
+| GET /api/products, cached | 50 | 1,869 | 16 | 92 | **0 DB queries**, 100% hit ratio |
+| GET /api/products, cached | 100 | 2,019 | 35 | 101 | throughput holds as concurrency doubles |
+| POST /api/orders | 50 | 224 | 210 | 528 | JWT + validation + 2 product lookups + AES-GCM + write |
+| Token endpoint brute force | 20 | 2,084 | 6 | 51 | 10,400 / 10,419 rejected with **429** at the gateway |
 
-Caching gave **~3.7× the throughput and ~5× lower p99** on the read path and removed all repeated DB reads. The rate limiter stopped more than 99.9% of a credential-stuffing burst before it reached auth-service. Expect different absolute numbers under Docker with real Redis, where the network hop adds latency and the services run in separate processes.
+Caching gave **~2.8× the throughput and ~2.2× lower p99** on the read path and eliminated repeated DB reads. The rate limiter rejected 99.8% of a credential-stuffing burst at the gateway; only the 19 requests within the auth tier's per-minute allowance reached auth-service.
+
+For comparison, the same suite on the single-process `npm run dev` stack (in-memory Redis mock, no container or network hops) reached 6,224 req/s cached vs 1,673 uncached (3.7×), at p99 10 ms vs 54 ms.
 
 ## Configuration
 
